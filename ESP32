@@ -1,0 +1,317 @@
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include <Wire.h>
+
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+RF24 radio(4, 5); 
+const byte address[][7] = {"BRAZO1", "BRAZO2"};
+
+unsigned long lastPressA = 0;
+unsigned long pressStartA = 0;
+unsigned long pressStartB = 0;
+unsigned long ultimaLecturaLuz = 0; 
+unsigned long tiempoPitido = 0;
+unsigned long bothStart = 0;
+unsigned long confirmStart = 0;
+
+extern bool inConfirm;
+
+bool bloquearLCD = false;  
+bool enConfirmacion = false;  
+bool mostrarPorcentajeBateria = true;  
+bool inConfirm = false;
+bool holdA = false;
+bool holdB = false;
+bool lucesEncendidas = false;
+bool modoAutomatico = true;
+bool signalA = false;
+bool signalB = false;
+bool estadoPitido = false;
+bool reversaActiva = false; 
+
+float voltajeBateria = 0;
+int porcentajeBateria = 0;
+int menuIndex = 0;
+const int totalOptions = 4;
+String menuOptions[] = {"Modo manejo", "Luces", "Bateria", "Proteccion"};
+
+
+const unsigned long EXIT_HOLD_MS = 5000;   
+const unsigned long CONFIRM_TIMEOUT_MS = 10000; 
+const unsigned long INTERVALO_LUZ = 500;   
+const int ldrPin = 32; 
+const int ledAvanzar = 25;
+const int ledRetroceder = 26;
+
+char receivedChar;
+
+
+void setup() {   
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+
+  lcd.clear();
+  lcd.setCursor(6, 0);
+  lcd.print("JGM");
+  lcd.setCursor(2, 1);
+  lcd.print("Productions");
+  delay(5000);
+
+  lcd.clear();
+  lcd.setCursor(4, 0);
+  lcd.print("Loading...");
+  lcd.setCursor(0, 1);
+  lcd.print("[");
+  for (int i = 0; i < 14; i++) {
+    lcd.setCursor(i + 1, 1);
+    lcd.print("=");
+    delay(350);
+  }
+  lcd.print("]");
+  delay(500);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("> " + menuOptions[menuIndex]);
+  lcd.setCursor(2, 1);
+  lcd.print(menuOptions[menuIndex + 1]);
+
+  pinMode(ledAvanzar, OUTPUT);
+  pinMode(ledRetroceder, OUTPUT);
+  pinMode(ledLuces, OUTPUT);
+  pinMode(CLAXON_PIN, OUTPUT);
+  pinMode(BOTON_CLAXON, INPUT_PULLUP);
+  pinMode(TRIG_FRONT, OUTPUT);
+  pinMode(ECHO_FRONT, INPUT);
+  digitalWrite(CLAXON_PIN, LOW);
+  digitalWrite(ledRetroceder, LOW);
+  
+
+  if (!radio.begin()) {
+    Serial.println("Error al iniciar radio");
+    while (1);
+  }
+
+  radio.openReadingPipe(1, address[0]);
+  radio.openReadingPipe(2, address[1]);
+  radio.setPALevel(RF24_PA_HIGH);
+  radio.startListening();
+
+  Serial.println("🚀 Receptor listo (modo flanco)");
+}
+
+void loop() {  
+  controlarClaxon();
+  actualizarLucesAutomaticas();
+  // Escucha datos
+  // Escucha datos del radio
+if (radio.available()) {
+  char incoming[2];
+  radio.read(&incoming, sizeof(incoming));
+
+  if (incoming[0] == 'A') {          
+    signalA = true;
+    pressStartA = millis();
+  } else if (incoming[0] == 'a') {
+    signalA = false;
+  }
+
+  if (incoming[0] == 'B') {          
+    signalB = true;
+    pressStartB = millis();
+  } else if (incoming[0] == 'b') {
+    signalB = false;
+    if (holdB) holdB = false;
+  }
+}
+
+
+if (signalA && !holdA) {
+  holdA = true;
+  menuIndex++;
+  if (menuIndex >= totalOptions) menuIndex = 0;
+  actualizarMenu();
+  delay(300);   
+} else if (!signalA) {
+  holdA = false;
+}
+
+
+if (signalB && !holdB) {
+  if (millis() - pressStartB >= 5000) {
+    holdB = true;
+    ejecutarOpcion();
+  }
+}
+
+}
+
+
+void actualizarMenu() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("> " + menuOptions[menuIndex]);
+  lcd.setCursor(2, 1);
+  lcd.print(menuOptions[(menuIndex + 1) % totalOptions]);
+}
+
+void ejecutarOpcion() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ejecutando...");
+  delay(1000);
+
+  if (menuIndex == 0) {
+    lcd.clear();
+    lcd.print("Modo manejo ON");
+    modoManejo();
+  } else if (menuIndex == 1) {
+    lcd.clear();
+    lcd.print("MENU LUCES");
+  } else if (menuIndex == 2) {
+    lcd.clear();
+  } else if (menuIndex == 3) {
+    lcd.clear();
+    lcd.print("Proteccion activa");
+  }
+
+  delay(3000);
+  actualizarMenu();
+}
+
+void modoManejo() { 
+  bool signalA = false;      
+  bool signalB = false;      
+  unsigned long bothStart = 0;
+  bool inConfirm = false;  
+  unsigned long confirmStart = 0;
+  bool exitNow = false;
+
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("MODO MANEJO ");
+  lcd.setCursor(0, 1);
+  lcd.print("I=Avanza D=Retro");
+  delay(700);
+
+
+  digitalWrite(ledAvanzar, LOW);
+  digitalWrite(ledRetroceder, LOW);
+
+
+  while (!exitNow) {
+    controlarClaxon();
+    actualizarLucesAutomaticas();
+
+
+  if (!inConfirm) {
+    mostrarBateriaEnManejo();
+  }
+
+
+    while (radio.available()) {
+      char c;
+      radio.read(&c, sizeof(c));
+
+
+      if (c == 'A')      signalA = true;
+      else if (c == 'a') signalA = false;
+      else if (c == 'B') signalB = true;
+      else if (c == 'b') signalB = false;
+
+
+      if (inConfirm) {
+        if (c == 'B') { // CONFIRMAR salida
+          exitNow = true;
+          break;
+        }
+        else if (c == 'A') { // CANCELAR salida
+          inConfirm = false;
+          bothStart = 0;
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("MODO MANEJO ");
+          lcd.setCursor(0, 1);
+          lcd.print("I=Avanza D=Retro");
+          delay(400);
+        }
+      }
+    }
+
+    if (exitNow) break;
+
+
+    if (!inConfirm) {
+      if (signalA && !signalB) {
+        digitalWrite(ledAvanzar, HIGH);
+        reversaActiva = false;
+        digitalWrite(ledRetroceder, LOW);
+        bothStart = 0;
+      }
+      else if (signalB && !signalA) {
+        digitalWrite(ledAvanzar, LOW);
+        reversaActiva = true;
+        digitalWrite(ledRetroceder, HIGH);
+        bothStart = 0;
+      }
+      else if (!signalA && !signalB) {
+        digitalWrite(ledAvanzar, LOW);
+        reversaActiva = false;
+        digitalWrite(ledRetroceder, LOW);
+        bothStart = 0;
+      }
+      else if (signalA && signalB) { 
+        digitalWrite(ledAvanzar, LOW);
+        reversaActiva = false;
+        digitalWrite(ledRetroceder, LOW);
+        if (bothStart == 0) bothStart = millis();
+        else if (millis() - bothStart >= EXIT_HOLD_MS) {
+          // Mostrar pantalla de confirmación
+          inConfirm = true;
+          confirmStart = millis();
+          inConfirm = true;
+          lcd.clear();
+          inConfirm = true;
+          lcd.setCursor(0, 0);
+          lcd.print(" Salir al menu?");
+          inConfirm = true;
+          lcd.setCursor(0, 1);
+          lcd.print("   B:Si  A:No");
+        }
+      }
+    }
+    else { 
+      if (millis() - confirmStart > CONFIRM_TIMEOUT_MS) {
+        // Tiempo expirado sin respuesta
+        inConfirm = false;
+        bothStart = 0;
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Tiempo agotado");
+        delay(800);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("MODO MANEJO");
+        lcd.setCursor(0, 1);
+        lcd.print("A=Avanzar B=Retro");
+      }
+    }
+
+    delay(30); // estabilidad
+  }
+
+
+  digitalWrite(ledAvanzar, LOW);
+  reversaActiva = false;
+  digitalWrite(ledRetroceder, LOW);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SALIENDO AL MENU");
+  delay(1200);
+
+}
