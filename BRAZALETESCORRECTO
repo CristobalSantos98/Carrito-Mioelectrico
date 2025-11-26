@@ -1,0 +1,113 @@
+// ======================================================
+//      BRAZALETE DER + 2 EMG + 2 LEDs INDIVIDUALES
+// ======================================================
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+// ---------- RF24 CONFIG ----------
+RF24 radio(4, 5);  // CE, CSN
+const byte address[7] = "BRAZO2";
+char message;
+
+// ---------- LEDS ----------
+const int led1PIN = 2;     // LED para sensor 1
+const int led2PIN = 15;    // LED para sensor 2
+
+// ---------- EMG CONFIG ----------
+const int emgPin1 = 34;
+float smooth1 = 0.0;
+bool lastState1 = LOW;
+
+const int emgPin2 = 33;
+float smooth2 = 0.0;
+bool lastState2 = LOW;
+
+// Threshold
+const float threshold = 1.80;
+
+void setup() {
+  Serial.begin(115200);
+
+  // ===== FIX LEDs =====
+  pinMode(led1PIN, OUTPUT);
+  pinMode(led2PIN, OUTPUT);
+
+  digitalWrite(led1PIN, LOW);
+  digitalWrite(led2PIN, LOW);
+
+  delay(100);
+
+  // RF INIT
+  if (!radio.begin()) {
+    Serial.println("❌ Error al iniciar radio");
+    while (1);
+  }
+
+  radio.openWritingPipe(address);
+  radio.setPALevel(RF24_PA_LOW);
+  radio.stopListening();
+
+  Serial.println("✅ Brazalete listo (2 EMG + 2 LEDs + flancos)");
+}
+
+void loop() {
+
+  // ======================================================
+  // SENSOR 1 (envía B / b)
+  // ======================================================
+  int raw1 = analogRead(emgPin1);
+  float volt1 = (raw1 / 4095.0) * 3.3;
+
+  smooth1 = (smooth1 * 0.85) + (volt1 * 0.15);
+  bool state1 = (smooth1 >= threshold) ? HIGH : LOW;
+
+  digitalWrite(led1PIN, state1);
+
+  if (state1 == HIGH && lastState1 == LOW) {
+    message = 'B';
+    radio.write(&message, sizeof(message));
+    Serial.println("📤 Sensor 1: Flanco ↑ → B");
+  }
+
+  if (state1 == LOW && lastState1 == HIGH) {
+    message = 'b';
+    radio.write(&message, sizeof(message));
+    Serial.println("📤 Sensor 1: Flanco ↓ → b");
+  }
+
+  lastState1 = state1;
+
+  // ======================================================
+  // SENSOR 2 (envía D / d)
+  // ======================================================
+  int raw2 = analogRead(emgPin2);
+  float volt2 = (raw2 / 4095.0) * 3.3;
+
+  smooth2 = (smooth2 * 0.85) + (volt2 * 0.15);
+  bool state2 = (smooth2 >= threshold) ? HIGH : LOW;
+
+  digitalWrite(led2PIN, state2);
+
+  if (state2 == HIGH && lastState2 == LOW) {
+    message = 'D';
+    radio.write(&message, sizeof(message));
+    Serial.println("📤 Sensor 2: Flanco ↑ → D");
+  }
+
+  if (state2 == LOW && lastState2 == HIGH) {
+    message = 'd';
+    radio.write(&message, sizeof(message));
+    Serial.println("📤 Sensor 2: Flanco ↓ → d");
+  }
+
+  lastState2 = state2;
+
+  // Debug rápido
+  Serial.print("EMG1:");
+  Serial.print(volt1, 2);
+  Serial.print("  EMG2:");
+  Serial.println(volt2, 2);
+
+  delay(100);
+}
